@@ -1,16 +1,6 @@
 # Armenia Macro Pulse — Complete Project Explanation
 ## Political Business Cycle Analysis: 2008–2025
 
-
----
-
-> **Instructions for the PDF-generating Claude:**
-> Convert this entire document into a professional, well-formatted PDF.
-> Use clear section headers, definition boxes for technical terms, tables where data is presented, and a clean academic style throughout.
-> Every term in bold should be defined clearly enough for a non-economist reader.
-> The document should be thorough, detailed, and self-contained — roughly 40–60 pages when formatted.
-> Include a cover page, table of contents, and glossary at the end.
-
 ---
 
 ## PART 1 — WHAT THIS PROJECT IS AND WHY IT EXISTS
