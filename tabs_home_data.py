@@ -6,6 +6,7 @@ Layout builders and Dash callbacks for:
   - Data Explorer tab  (_tab_data, upd_data, download_csv)
 """
 
+import dash
 import plotly.graph_objects as go
 from dash import dcc, html, dash_table, Input, Output
 
@@ -199,7 +200,13 @@ def register_callbacks(app):
         Input('btn-download', 'n_clicks'),
         prevent_initial_call=True,
     )
-    def download_csv(_n):
+    def download_csv(n_clicks):
+        # prevent_initial_call=True blocks the very first app load, but when the tab
+        # content is rebuilt dynamically (tab-router callback re-renders the layout),
+        # Dash treats btn-download as a freshly mounted component and fires this
+        # callback again with n_clicks=0.  Guard against that here explicitly.
+        if not n_clicks:
+            raise dash.exceptions.PreventUpdate
         return dcc.send_data_frame(state.DATA.to_csv, 'armenia_quarterly.csv')
 
     @app.callback(
