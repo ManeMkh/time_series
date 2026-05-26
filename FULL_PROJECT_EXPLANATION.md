@@ -1,6 +1,6 @@
 # Armenia Macro Pulse — Complete Project Explanation
 ## Political Business Cycle Analysis: 2008–2025
-### Author: Eliza Mirzoyan
+
 
 ---
 
