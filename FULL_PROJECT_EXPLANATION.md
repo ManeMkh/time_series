@@ -1147,6 +1147,4 @@ By 2023–2024, all three models converge to forecasting Δlog(CPI) in a range o
 
 ---
 
-*End of document. Total sections: 13. Total figures explained: 9. Total technical terms defined: 40.*
-
-*This document contains everything needed to generate a comprehensive academic PDF report on the Armenia Macro Pulse Political Business Cycle project.*
+*End of document. Total sections: 13.
