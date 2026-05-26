@@ -4,7 +4,7 @@ models.py
 Data loading and all statistical / ML model fitting:
   - VAR (Vector Autoregression) with Granger causality
   - XGBoost
-  - LSTM (optional, requires TensorFlow)
+  - LSTM (optional, requires PyTorch)
 
 Call `load_and_fit()` once at startup; it returns a ModelResults dataclass
 that the rest of the app can import from `state.py`.
@@ -22,19 +22,38 @@ from statsmodels.tsa.api import VAR
 from statsmodels.tsa.stattools import grangercausalitytests
 import os
 import random
-    
+
 from constants import VAR_LABELS
 
-# ── Optional TensorFlow / LSTM ────────────────────────────────
+# ── Optional PyTorch / LSTM ────────────────────────────────────
 try:
-    import tensorflow as tf
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense, Dropout
-    from tensorflow.keras.callbacks import EarlyStopping
-    tf.get_logger().setLevel('ERROR')
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
     _LSTM_AVAILABLE = True
 except ImportError:
     _LSTM_AVAILABLE = False
+
+
+# ── PyTorch LSTM model definition ─────────────────────────────
+
+if _LSTM_AVAILABLE:
+    class LSTMModel(nn.Module):
+        def __init__(self, n_features: int, hidden1: int = 32, hidden2: int = 16,
+                     dropout: float = 0.2):
+            super().__init__()
+            self.lstm1   = nn.LSTM(n_features, hidden1, batch_first=True)
+            self.drop1   = nn.Dropout(dropout)
+            self.lstm2   = nn.LSTM(hidden1, hidden2, batch_first=True)
+            self.drop2   = nn.Dropout(dropout)
+            self.fc      = nn.Linear(hidden2, 1)
+
+        def forward(self, x):
+            out, _ = self.lstm1(x)           # (batch, seq, hidden1)
+            out     = self.drop1(out)
+            out, _ = self.lstm2(out)          # (batch, seq, hidden2)
+            out     = self.drop2(out[:, -1])  # take last time-step
+            return self.fc(out)               # (batch, 1)
 
 
 # ── Data loading ──────────────────────────────────────────────
@@ -155,7 +174,7 @@ def xgb_forecast(var_data: pd.DataFrame, exog: pd.Series):
 def lstm_forecast(var_data: pd.DataFrame, exog: pd.Series):
     """
     Two-layer LSTM forecast for Δlog(CPI) with a 4-quarter look-back window.
-    Falls back gracefully to (None, None, nan) when TensorFlow is not installed.
+    Falls back gracefully to (None, None, nan) when PyTorch is not installed.
 
     Returns
     -------
@@ -165,6 +184,12 @@ def lstm_forecast(var_data: pd.DataFrame, exog: pd.Series):
     """
     if not _LSTM_AVAILABLE:
         return None, None, float('nan')
+
+    # ── Reproducibility seeds ─────────────────────────────────
+    os.environ['PYTHONHASHSEED'] = '42'
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
 
     split  = '2022-01-01'
     target = 'dlog_CPI_index'
@@ -191,8 +216,8 @@ def lstm_forecast(var_data: pd.DataFrame, exog: pd.Series):
     for i in range(SEQ, len(X_all)):
         Xs.append(X_all[i - SEQ:i])
         ys.append(y_all[i])
-    Xs = np.array(Xs)
-    ys = np.array(ys)
+    Xs = np.array(Xs, dtype=np.float32)
+    ys = np.array(ys, dtype=np.float32)
 
     seq_idx    = df.index[SEQ:]
     train_mask = seq_idx < split
@@ -204,31 +229,68 @@ def lstm_forecast(var_data: pd.DataFrame, exog: pd.Series):
     if len(X_tr) < 8 or len(X_te) == 0:
         return None, None, float('nan')
 
-    # 1. Set Python, Environment, and NumPy seeds
-    os.environ['PYTHONHASHSEED'] = '42'
-    random.seed(42)
-    np.random.seed(42)
-    
-    # 2. Set TensorFlow see
-    tf.random.set_seed(42)
-    model = Sequential([
-        LSTM(32, return_sequences=True, input_shape=(SEQ, N_FEAT)),
-        Dropout(0.2),
-        LSTM(16, return_sequences=False),
-        Dropout(0.2),
-        Dense(1),
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    es = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
-    model.fit(
-        X_tr, y_tr,
-        epochs=200, batch_size=8,
-        validation_split=0.15,
-        callbacks=[es], verbose=0,
+    # ── Build DataLoader ──────────────────────────────────────
+    X_tr_t = torch.from_numpy(X_tr)
+    y_tr_t = torch.from_numpy(y_tr)
+
+    # Hold out last 15 % of training data for validation (early stopping)
+    val_size  = max(1, int(len(X_tr_t) * 0.15))
+    X_val_t, y_val_t = X_tr_t[-val_size:], y_tr_t[-val_size:]
+    X_tr_t,  y_tr_t  = X_tr_t[:-val_size],  y_tr_t[:-val_size]
+
+    train_loader = DataLoader(
+        TensorDataset(X_tr_t, y_tr_t),
+        batch_size=8, shuffle=False,
     )
 
-    preds_scaled = model.predict(X_te, verbose=0)
-    preds        = scaler_y.inverse_transform(preds_scaled).flatten()
+    # ── Instantiate model, loss, optimiser ───────────────────
+    device = torch.device('cpu')          # Render is CPU-only
+    model  = LSTMModel(N_FEAT).to(device)
+    criterion = nn.MSELoss()
+    optimiser = torch.optim.Adam(model.parameters())
+
+    # ── Training loop with early stopping ────────────────────
+    patience, best_val, wait = 15, float('inf'), 0
+    best_state = None
+
+    for epoch in range(200):
+        model.train()
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimiser.zero_grad()
+            loss = criterion(model(xb), yb)
+            loss.backward()
+            optimiser.step()
+
+        # Validation loss
+        model.eval()
+        with torch.no_grad():
+            val_loss = criterion(
+                model(X_val_t.to(device)),
+                y_val_t.to(device),
+            ).item()
+
+        if val_loss < best_val:
+            best_val   = val_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            wait       = 0
+        else:
+            wait += 1
+            if wait >= patience:
+                break
+
+    # Restore best weights
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # ── Inference ─────────────────────────────────────────────
+    model.eval()
+    with torch.no_grad():
+        preds_scaled = model(
+            torch.from_numpy(X_te).to(device)
+        ).cpu().numpy()
+
+    preds = scaler_y.inverse_transform(preds_scaled).flatten()
 
     yte   = df.loc[seq_idx[test_mask], target].values
     mask  = ~(np.isnan(preds) | np.isnan(yte))

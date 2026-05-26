@@ -153,6 +153,7 @@ def _tab_data(lang: str) -> html.Div:
     return html.Div([
         _section_title("Data Explorer", "Select a variable to explore its history"),
         html.Div([
+            dcc.Download(id='download-data'),
             html.Button(
                 "⬇️  Download Cleaned Data (CSV)", id='btn-download',
                 style={
